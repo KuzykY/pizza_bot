@@ -182,6 +182,9 @@ bot.onText(/\/start/, async (msg) => {
   const name = msg.from.first_name || "Гість";
   const username = msg.from.username || "";
 
+  console.log(`/start від: ${tgId}, isAdmin: ${isAdmin(tgId)}, isBarista: ${isBarista(tgId)}`);
+  console.log(`BARISTA_IDS зараз:`, BARISTA_IDS);
+
   if (isBarista(tgId)) {
     return bot.sendMessage(tgId,
       `👋 Привіт, ${name}!\n\nНатисни кнопку щоб згенерувати код після продажу піци 👇`,
