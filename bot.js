@@ -43,7 +43,7 @@ function todayStr() {
 
 function randomCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  return Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+  return Array.from({ length: 4 }, () => "0123456789"[Math.floor(Math.random() * 10)]).join("");
 }
 
 function randomCoupon() {
@@ -220,7 +220,7 @@ bot.on("message", async (msg) => {
     return bot.sendMessage(msg.chat.id,
       `🎟 *Одноразовий код:*\n\n` +
       `\`${code}\`\n\n` +
-      `📢 Скажи клієнту:\n_"Відкрий бота і введи: /code ${code}"_\n\n` +
+      `📢 Скажи клієнту:\n_"Відкрий бота і введи код: *${code}*"_\n\n` +
       `⚠️ Код діє лише *один раз* і лише для *одного клієнта*`,
       { parse_mode: "Markdown", reply_markup: baristaKeyboard }
     );
@@ -250,58 +250,50 @@ bot.on("message", async (msg) => {
 
   if (msg.text === "🍕 Ввести код") {
     return bot.sendMessage(msg.chat.id,
-      `Введи код який дав бариста:\n\n👉 \`/code XXXXXX\``,
+      `Просто напиши *4-значний код* який дав бариста 👇`,
       { parse_mode: "Markdown", reply_markup: clientKeyboard }
     );
+  }
+
+  // ── Обробка 4-значного коду ──────────────────────────────────────────────
+  if (/^\d{4}$/.test(msg.text)) {
+    const tgId2 = tgId;
+    const name2 = name;
+    const username2 = username;
+    if (isStaff(tgId2)) return;
+    await getOrCreateClient(tgId2, name2, username2);
+    const inputCode = msg.text.trim();
+    const valid = await useOneTimeCode(inputCode);
+    if (!valid) {
+      return bot.sendMessage(msg.chat.id,
+        `❌ *Невірний або вже використаний код.*\n\nПопроси бариста згенерувати новий після покупки піци.`,
+        { parse_mode: "Markdown", reply_markup: clientKeyboard }
+      );
+    }
+    const newCount = await incrementClient(tgId2);
+    const remaining = 10 - (newCount % 10);
+    if (newCount % 10 === 0) {
+      const coupon = await createCoupon(tgId2, name2);
+      return bot.sendMessage(msg.chat.id,
+        `🎉 *Вітаємо!* Це твоя ${newCount}-а піца!\n\n` +
+        `🆓 Ти отримуєш *безкоштовну міні-піцу!*\n\n` +
+        `Покажи касиру цей купон:\n🎟 \`${coupon}\`\n\n` +
+        `_Купон безстроковий — не загубь!_`,
+        { parse_mode: "Markdown", reply_markup: clientKeyboard }
+      );
+    } else {
+      return bot.sendMessage(msg.chat.id,
+        `✅ *Покупку зараховано!*\n\n` +
+        `🍕 Всього піц: *${newCount}*\n` +
+        `До безкоштовної ще: *${remaining}* ${pizzaWord(remaining)}\n\n` +
+        `${remaining <= 3 ? "🔥 Ще трохи!" : "💪 Гарний прогрес!"}`,
+        { parse_mode: "Markdown", reply_markup: clientKeyboard }
+      );
+    }
   }
 });
 
-// ══════════════════════════════════════════════════════════════════════════
-//  /code — клієнт вводить одноразовий код
-// ══════════════════════════════════════════════════════════════════════════
-bot.onText(/\/code (.+)/, async (msg, match) => {
-  const tgId = msg.from.id;
-  const name = msg.from.first_name || "Гість";
-  const username = msg.from.username || "";
 
-  if (isStaff(tgId)) return; // стафф не може зараховувати собі
-
-  const inputCode = match[1].trim().toUpperCase();
-
-  await getOrCreateClient(tgId, name, username);
-
-  // Перевіряємо одноразовий код
-  const valid = await useOneTimeCode(inputCode);
-
-  if (!valid) {
-    return bot.sendMessage(tgId,
-      `❌ *Невірний або вже використаний код.*\n\nПопроси бариста згенерувати новий після покупки піци.`,
-      { parse_mode: "Markdown", reply_markup: clientKeyboard }
-    );
-  }
-
-  const newCount = await incrementClient(tgId);
-  const remaining = 10 - (newCount % 10);
-
-  if (newCount % 10 === 0) {
-    const coupon = await createCoupon(tgId, name);
-    bot.sendMessage(tgId,
-      `🎉 *Вітаємо!* Це твоя ${newCount}-а піца!\n\n` +
-      `🆓 Ти отримуєш *безкоштовну міні-піцу!*\n\n` +
-      `Покажи касиру цей купон:\n🎟 \`${coupon}\`\n\n` +
-      `_Купон безстроковий — не загубь!_`,
-      { parse_mode: "Markdown", reply_markup: clientKeyboard }
-    );
-  } else {
-    bot.sendMessage(tgId,
-      `✅ *Покупку зараховано!*\n\n` +
-      `🍕 Всього піц: *${newCount}*\n` +
-      `До безкоштовної ще: *${remaining}* ${pizzaWord(remaining)}\n\n` +
-      `${remaining <= 3 ? "🔥 Ще трохи!" : "💪 Гарний прогрес!"}`,
-      { parse_mode: "Markdown", reply_markup: clientKeyboard }
-    );
-  }
-});
 
 // ══════════════════════════════════════════════════════════════════════════
 //  АДМІН — панель
@@ -412,4 +404,3 @@ cron.schedule("1 9 * * *", async () => {
 }, { timezone: "Europe/Kyiv" });
 
 console.log("🍕 PizzaBro запущено!");
-console.log("🍕 Pizza Bot запущено!");
