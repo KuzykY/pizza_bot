@@ -6,7 +6,7 @@ const cron = require("node-cron");
 
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 
-// ── Google Sheets підключення ─────────────────────────────────────────────
+// ── Google Sheets ─────────────────────────────────────────────────────────
 const privateKey = process.env.GOOGLE_PRIVATE_KEY;
 if (!privateKey) throw new Error("❌ GOOGLE_PRIVATE_KEY не задано!");
 if (!process.env.GOOGLE_SERVICE_EMAIL) throw new Error("❌ GOOGLE_SERVICE_EMAIL не задано!");
@@ -23,7 +23,7 @@ const doc = new GoogleSpreadsheet(process.env.SPREADSHEET_ID, serviceAccountAuth
 async function getSheets() {
   await doc.loadInfo();
   const clients = doc.sheetsByTitle["clients"] || await doc.addSheet({ title: "clients", headerValues: ["tg_id", "name", "username", "count", "joined", "last_used"] });
-  const codes   = doc.sheetsByTitle["codes"]   || await doc.addSheet({ title: "codes",   headerValues: ["date", "code", "used"] });
+  const codes   = doc.sheetsByTitle["codes"]   || await doc.addSheet({ title: "codes",   headerValues: ["date", "code", "qty", "used"] });
   const coupons = doc.sheetsByTitle["coupons"] || await doc.addSheet({ title: "coupons", headerValues: ["coupon", "tg_id", "name", "created", "used"] });
   return { clients, codes, coupons };
 }
@@ -36,13 +36,16 @@ function isAdmin(tgId)   { return ADMIN_IDS.includes(String(tgId)); }
 function isBarista(tgId) { return BARISTA_IDS.includes(String(tgId)); }
 function isStaff(tgId)   { return isAdmin(tgId) || isBarista(tgId); }
 
+// ── Стан очікування кількості від бариста ─────────────────────────────────
+// { [tgId]: true } — бариста зараз вводить кількість піц
+const waitingForQty = {};
+
 // ── Утиліти ───────────────────────────────────────────────────────────────
 function todayStr() {
   return new Date().toLocaleString("sv", { timeZone: "Europe/Kyiv" }).slice(0, 10);
 }
 
 function randomCode() {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   return Array.from({ length: 4 }, () => "0123456789"[Math.floor(Math.random() * 10)]).join("");
 }
 
@@ -56,7 +59,7 @@ function pizzaWord(n) {
   return "піц";
 }
 
-// ── Постійна клавіатура клієнта ───────────────────────────────────────────
+// ── Клавіатури ────────────────────────────────────────────────────────────
 const clientKeyboard = {
   keyboard: [
     [{ text: "🏠 Головна" }, { text: "📊 Статистика" }],
@@ -66,20 +69,19 @@ const clientKeyboard = {
   persistent: true,
 };
 
-// ── Клавіатура бариста ────────────────────────────────────────────────────
 const baristaKeyboard = {
   keyboard: [
-    [{ text: "🎟 Згенерувати код для клієнта" }],
+    [{ text: "🍕 1 піца" }, { text: "🔢 Вказати кількість" }],
   ],
   resize_keyboard: true,
   persistent: true,
 };
 
-// ── Одноразові коди ───────────────────────────────────────────────────────
-async function generateOneTimeCode() {
+// ── Коди ─────────────────────────────────────────────────────────────────
+async function generateOneTimeCode(qty) {
   const { codes } = await getSheets();
   const code = randomCode();
-  await codes.addRow({ date: todayStr(), code, used: "no" });
+  await codes.addRow({ date: todayStr(), code, qty: String(qty), used: "no" });
   return code;
 }
 
@@ -87,10 +89,11 @@ async function useOneTimeCode(inputCode) {
   const { codes } = await getSheets();
   const rows = await codes.getRows();
   const found = rows.find(r => r.get("code") === inputCode && r.get("used") === "no");
-  if (!found) return false;
+  if (!found) return null;
+  const qty = parseInt(found.get("qty") || "1");
   found.set("used", "yes");
   await found.save();
-  return true;
+  return qty;
 }
 
 // ── Клієнти ───────────────────────────────────────────────────────────────
@@ -99,15 +102,7 @@ async function getOrCreateClient(tgId, name, username) {
   const rows = await clients.getRows();
   const found = rows.find(r => r.get("tg_id") === String(tgId));
   if (found) return found;
-
-  await clients.addRow({
-    tg_id: String(tgId),
-    name,
-    username: username || "",
-    count: "0",
-    joined: todayStr(),
-    last_used: "",
-  });
+  await clients.addRow({ tg_id: String(tgId), name, username: username || "", count: "0", joined: todayStr(), last_used: "" });
   const updated = await clients.getRows();
   return updated.find(r => r.get("tg_id") === String(tgId));
 }
@@ -119,12 +114,12 @@ async function getClientCount(tgId) {
   return found ? parseInt(found.get("count") || "0") : 0;
 }
 
-async function incrementClient(tgId) {
+async function addToClient(tgId, qty) {
   const { clients } = await getSheets();
   const rows = await clients.getRows();
   const found = rows.find(r => r.get("tg_id") === String(tgId));
   if (!found) return 0;
-  const newCount = parseInt(found.get("count") || "0") + 1;
+  const newCount = parseInt(found.get("count") || "0") + qty;
   found.set("count", String(newCount));
   await found.save();
   return newCount;
@@ -144,7 +139,7 @@ async function checkCoupon(couponCode) {
   const found = rows.find(r => r.get("coupon") === couponCode.toUpperCase());
   if (!found) return { status: "not_found" };
   if (found.get("used") === "yes") return { status: "used" };
-  return { status: "valid", name: found.get("name"), row: found };
+  return { status: "valid", name: found.get("name") };
 }
 
 async function markCouponUsed(couponCode) {
@@ -154,7 +149,7 @@ async function markCouponUsed(couponCode) {
   if (found) { found.set("used", "yes"); await found.save(); }
 }
 
-// ── Головна сторінка клієнта ──────────────────────────────────────────────
+// ── Головна клієнта ───────────────────────────────────────────────────────
 async function sendHome(chatId, name, tgId) {
   const count = await getClientCount(tgId);
   const remaining = 10 - (count % 10);
@@ -168,23 +163,20 @@ async function sendHome(chatId, name, tgId) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-//  /start — визначаємо роль і показуємо потрібний інтерфейс
+//  /start
 // ══════════════════════════════════════════════════════════════════════════
 bot.onText(/\/start/, async (msg) => {
   const tgId = msg.from.id;
   const name = msg.from.first_name || "Гість";
   const username = msg.from.username || "";
 
-  // Бариста
   if (isBarista(tgId)) {
     return bot.sendMessage(tgId,
-      `👋 Привіт, ${name}!\n\n` +
-      `Натисни кнопку щоб згенерувати код для клієнта після продажу піци 👇`,
+      `👋 Привіт, ${name}!\n\nНатисни кнопку щоб згенерувати код після продажу піци 👇`,
       { parse_mode: "Markdown", reply_markup: baristaKeyboard }
     );
   }
 
-  // Адмін
   if (isAdmin(tgId)) {
     return bot.sendMessage(tgId,
       `👋 Привіт, ${name}! Ти в адмін-режимі.\n\nВикористовуй /admin для панелі керування.`,
@@ -192,49 +184,81 @@ bot.onText(/\/start/, async (msg) => {
     );
   }
 
-  // Клієнт
   await getOrCreateClient(tgId, name, username);
   bot.sendMessage(tgId,
-    `👋 Привіт, ${name}!\n\n` +
-    `🍕 Це бот програми лояльності *Хліб з маслом*\n` +
-    `Кожна 11-а міні-піца — *безкоштовно!*\n\n` +
-    `Використовуй кнопки внизу 👇`,
+    `👋 Привіт, ${name}!\n\n🍕 Це бот програми лояльності *Хліб з маслом*\nКожна 11-а міні-піца — *безкоштовно!*\n\nВикористовуй кнопки внизу 👇`,
     { parse_mode: "Markdown", reply_markup: clientKeyboard }
   );
   await sendHome(tgId, name, tgId);
 });
 
 // ══════════════════════════════════════════════════════════════════════════
-//  БАРИСТА — генерація коду
+//  ОБРОБКА ПОВІДОМЛЕНЬ
 // ══════════════════════════════════════════════════════════════════════════
 bot.on("message", async (msg) => {
   if (!msg.text) return;
   const tgId = msg.from.id;
   const name = msg.from.first_name || "Гість";
   const username = msg.from.username || "";
+  const text = msg.text.trim();
 
-  // ── Кнопки бариста ──────────────────────────────────────────────────────
-  if (msg.text === "🎟 Згенерувати код для клієнта") {
-    if (!isStaff(tgId)) return;
-    const code = await generateOneTimeCode();
-    return bot.sendMessage(msg.chat.id,
-      `🎟 *Одноразовий код:*\n\n` +
-      `\`${code}\`\n\n` +
-      `📢 Скажи клієнту:\n_"Відкрий бота і введи код: *${code}*"_\n\n` +
-      `⚠️ Код діє лише *один раз* і лише для *одного клієнта*`,
-      { parse_mode: "Markdown", reply_markup: baristaKeyboard }
-    );
+  // ══ БАРИСТА ══════════════════════════════════════════════════════════════
+  if (isStaff(tgId)) {
+
+    // Кнопка "1 піца" — одразу генеруємо код на 1
+    if (text === "🍕 1 піца") {
+      const code = await generateOneTimeCode(1);
+      return bot.sendMessage(msg.chat.id,
+        `🎟 *Код для клієнта:*\n\n` +
+        `\`${code}\`\n\n` +
+        `📦 Зарахує піц: *1*\n\n` +
+        `📢 Скажи клієнту: _"Напиши в бот цей код: ${code}"_\n\n` +
+        `⚠️ Код одноразовий — згорає після використання`,
+        { parse_mode: "Markdown", reply_markup: baristaKeyboard }
+      );
+    }
+
+    // Кнопка "Вказати кількість" — питаємо скільки
+    if (text === "🔢 Вказати кількість") {
+      waitingForQty[tgId] = true;
+      return bot.sendMessage(msg.chat.id,
+        `🍕 *Скільки піц купив клієнт?*\n\nНапиши число (наприклад: 2, 3, 5...)`,
+        { parse_mode: "Markdown", reply_markup: { remove_keyboard: true } }
+      );
+    }
+
+    // Крок 2 — бариста вводить кількість
+    if (waitingForQty[tgId]) {
+      const qty = parseInt(text);
+      if (isNaN(qty) || qty < 1 || qty > 20) {
+        return bot.sendMessage(msg.chat.id,
+          `⚠️ Введи число від 1 до 20`,
+          { parse_mode: "Markdown" }
+        );
+      }
+      delete waitingForQty[tgId];
+      const code = await generateOneTimeCode(qty);
+      return bot.sendMessage(msg.chat.id,
+        `🎟 *Код для клієнта:*\n\n` +
+        `\`${code}\`\n\n` +
+        `📦 Зарахує піц: *${qty}*\n\n` +
+        `📢 Скажи клієнту: _"Напиши в бот цей код: ${code}"_\n\n` +
+        `⚠️ Код одноразовий — згорає після використання`,
+        { parse_mode: "Markdown", reply_markup: baristaKeyboard }
+      );
+    }
+
+    return; // стафф не обробляємо як клієнта
   }
 
-  // ── Кнопки клієнта ──────────────────────────────────────────────────────
-  if (isStaff(tgId)) return; // стафф не обробляємо як клієнта
+  // ══ КЛІЄНТ ═══════════════════════════════════════════════════════════════
 
-  if (msg.text === "🏠 Головна") {
+  if (text === "🏠 Головна") {
     await getOrCreateClient(tgId, name, username);
     return sendHome(msg.chat.id, name, tgId);
   }
 
-  if (msg.text === "📊 Статистика") {
+  if (text === "📊 Статистика") {
     const count = await getClientCount(tgId);
     const remaining = 10 - (count % 10);
     const freeEarned = Math.floor(count / 10);
@@ -248,100 +272,91 @@ bot.on("message", async (msg) => {
     );
   }
 
-  if (msg.text === "🍕 Ввести код") {
+  if (text === "🍕 Ввести код") {
     return bot.sendMessage(msg.chat.id,
       `Просто напиши *4-значний код* який дав бариста 👇`,
       { parse_mode: "Markdown", reply_markup: clientKeyboard }
     );
   }
 
-  // ── Обробка 4-значного коду ──────────────────────────────────────────────
-  if (/^\d{4}$/.test(msg.text)) {
-    const tgId2 = tgId;
-    const name2 = name;
-    const username2 = username;
-    if (isStaff(tgId2)) return;
-    await getOrCreateClient(tgId2, name2, username2);
-    const inputCode = msg.text.trim();
-    const valid = await useOneTimeCode(inputCode);
-    if (!valid) {
+  // ── 4-значний код ────────────────────────────────────────────────────────
+  if (/^\d{4}$/.test(text)) {
+    await getOrCreateClient(tgId, name, username);
+    const qty = await useOneTimeCode(text);
+
+    if (!qty) {
       return bot.sendMessage(msg.chat.id,
         `❌ *Невірний або вже використаний код.*\n\nПопроси бариста згенерувати новий після покупки піци.`,
         { parse_mode: "Markdown", reply_markup: clientKeyboard }
       );
     }
-    const newCount = await incrementClient(tgId2);
+
+    const prevCount = await getClientCount(tgId);
+    const newCount = await addToClient(tgId, qty);
+
+    // Перевіряємо чи перетнули межу 10 (може бути кілька безкоштовних якщо купив багато)
+    const couponsEarned = Math.floor(newCount / 10) - Math.floor(prevCount / 10);
     const remaining = 10 - (newCount % 10);
-    if (newCount % 10 === 0) {
-      const coupon = await createCoupon(tgId2, name2);
-      return bot.sendMessage(msg.chat.id,
-        `🎉 *Вітаємо!* Це твоя ${newCount}-а піца!\n\n` +
-        `🆓 Ти отримуєш *безкоштовну міні-піцу!*\n\n` +
+
+    let message = `✅ *Покупку зараховано!*\n\n` +
+      `🍕 Додано піц: *${qty}*\n` +
+      `Всього: *${newCount}*\n` +
+      `До безкоштовної ще: *${remaining}* ${pizzaWord(remaining)}\n\n` +
+      `${remaining <= 3 ? "🔥 Ще трохи!" : "💪 Гарний прогрес!"}`;
+
+    await bot.sendMessage(msg.chat.id, message, { parse_mode: "Markdown", reply_markup: clientKeyboard });
+
+    // Видаємо купони якщо заробив
+    for (let i = 0; i < couponsEarned; i++) {
+      const coupon = await createCoupon(tgId, name);
+      await bot.sendMessage(msg.chat.id,
+        `🎉 *Вітаємо!* Ти заробив безкоштовну піцу!\n\n` +
         `Покажи касиру цей купон:\n🎟 \`${coupon}\`\n\n` +
         `_Купон безстроковий — не загубь!_`,
         { parse_mode: "Markdown", reply_markup: clientKeyboard }
       );
-    } else {
-      return bot.sendMessage(msg.chat.id,
-        `✅ *Покупку зараховано!*\n\n` +
-        `🍕 Всього піц: *${newCount}*\n` +
-        `До безкоштовної ще: *${remaining}* ${pizzaWord(remaining)}\n\n` +
-        `${remaining <= 3 ? "🔥 Ще трохи!" : "💪 Гарний прогрес!"}`,
-        { parse_mode: "Markdown", reply_markup: clientKeyboard }
-      );
     }
+    return;
   }
 });
 
-
-
 // ══════════════════════════════════════════════════════════════════════════
-//  АДМІН — панель
+//  АДМІН
 // ══════════════════════════════════════════════════════════════════════════
 bot.onText(/\/admin/, async (msg) => {
   if (!isAdmin(msg.from.id)) return;
-
-  bot.sendMessage(msg.chat.id,
-    "👨‍💼 *Адмін-панель*\nОбери дію:",
-    {
-      parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "📋 Топ клієнтів", callback_data: "admin_clients" }],
-          [{ text: "✅ Перевірити купон", callback_data: "admin_coupon" }],
-        ]
-      }
+  bot.sendMessage(msg.chat.id, "👨‍💼 *Адмін-панель*\nОбери дію:", {
+    parse_mode: "Markdown",
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "📋 Топ клієнтів", callback_data: "admin_clients" }],
+        [{ text: "✅ Перевірити купон", callback_data: "admin_coupon" }],
+      ]
     }
-  );
+  });
 });
 
 bot.onText(/\/check (.+)/, async (msg, match) => {
   if (!isAdmin(msg.from.id)) return;
   const couponCode = match[1].trim().toUpperCase();
   const result = await checkCoupon(couponCode);
-
   if (result.status === "not_found") return bot.sendMessage(msg.chat.id, "❌ Купон не знайдено.");
-  if (result.status === "used")      return bot.sendMessage(msg.chat.id, "⚠️ Купон вже був використаний.");
-
+  if (result.status === "used")      return bot.sendMessage(msg.chat.id, "⚠️ Купон вже використано.");
   bot.sendMessage(msg.chat.id,
     `✅ Купон *дійсний*\n👤 Клієнт: *${result.name}*\n\nВидати безкоштовну піцу та закрити купон?`,
     {
       parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: [[
-          { text: `✅ Так, закрити`, callback_data: `use_${couponCode}` },
-          { text: "❌ Скасувати", callback_data: "cancel" }
-        ]]
-      }
+      reply_markup: { inline_keyboard: [[
+        { text: "✅ Так, закрити", callback_data: `use_${couponCode}` },
+        { text: "❌ Скасувати", callback_data: "cancel" }
+      ]]}
     }
   );
 });
 
-// ── Callback кнопки адміна ────────────────────────────────────────────────
 bot.on("callback_query", async (query) => {
   const tgId = query.from.id;
   const data = query.data;
-
   if (!isAdmin(tgId)) return bot.answerCallbackQuery(query.id);
 
   if (data === "admin_clients") {
@@ -349,55 +364,41 @@ bot.on("callback_query", async (query) => {
     const rows = await clients.getRows();
     const sorted = rows
       .map(r => ({ name: r.get("name"), count: parseInt(r.get("count") || "0") }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 15);
-
+      .sort((a, b) => b.count - a.count).slice(0, 15);
     const lines = ["📋 *Топ клієнтів:*\n"];
     sorted.forEach((c, i) => {
       const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `${i + 1}.`;
       lines.push(`${medal} ${c.name} — *${c.count}* 🍕`);
     });
-
-    bot.editMessageText(lines.join("\n"),
-      { chat_id: query.message.chat.id, message_id: query.message.message_id, parse_mode: "Markdown" }
-    );
+    bot.editMessageText(lines.join("\n"), { chat_id: query.message.chat.id, message_id: query.message.message_id, parse_mode: "Markdown" });
   }
 
   if (data === "admin_coupon") {
-    bot.editMessageText(
-      "Введи команду з купоном:\n`/check FREE-XXXXXXXX`",
-      { chat_id: query.message.chat.id, message_id: query.message.message_id, parse_mode: "Markdown" }
-    );
+    bot.editMessageText("Введи команду з купоном:\n`/check FREE-XXXXXXXX`",
+      { chat_id: query.message.chat.id, message_id: query.message.message_id, parse_mode: "Markdown" });
   }
 
   if (data.startsWith("use_")) {
     const coupon = data.replace("use_", "");
     await markCouponUsed(coupon);
-    bot.editMessageText(
-      `✅ Купон \`${coupon}\` закрито. Безкоштовна піца видана! 🍕`,
-      { chat_id: query.message.chat.id, message_id: query.message.message_id, parse_mode: "Markdown" }
-    );
+    bot.editMessageText(`✅ Купон \`${coupon}\` закрито. Безкоштовна піца видана! 🍕`,
+      { chat_id: query.message.chat.id, message_id: query.message.message_id, parse_mode: "Markdown" });
   }
 
   if (data === "cancel") {
-    bot.editMessageText("Скасовано.",
-      { chat_id: query.message.chat.id, message_id: query.message.message_id }
-    );
+    bot.editMessageText("Скасовано.", { chat_id: query.message.chat.id, message_id: query.message.message_id });
   }
 
   bot.answerCallbackQuery(query.id);
 });
 
 // ══════════════════════════════════════════════════════════════════════════
-//  ЩОРАНКУ О 9:01 — нагадування адміну
+//  ЩОРАНКУ О 9:01
 // ══════════════════════════════════════════════════════════════════════════
 cron.schedule("1 9 * * *", async () => {
   for (const adminId of ADMIN_IDS) {
     bot.sendMessage(adminId,
-      `☀️ *Доброго ранку!*\n\n` +
-      `🍕 Бот лояльності працює.\n` +
-      `Баристи генерують коди після кожного продажу піци через кнопку в боті.\n\n` +
-      `Для перегляду статистики: /admin`,
+      `☀️ *Доброго ранку!*\n\n🍕 Бот лояльності працює.\nДля статистики: /admin`,
       { parse_mode: "Markdown" }
     );
   }
