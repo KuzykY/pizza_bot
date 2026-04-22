@@ -36,6 +36,9 @@ function isAdmin(tgId)   { return ADMIN_IDS.includes(String(tgId)); }
 function isBarista(tgId) { return BARISTA_IDS.includes(String(tgId)); }
 function isStaff(tgId)   { return isAdmin(tgId) || isBarista(tgId); }
 
+console.log("ADMIN_IDS:", ADMIN_IDS);
+console.log("BARISTA_IDS:", BARISTA_IDS);
+
 // ── Стан очікування кількості від бариста ─────────────────────────────────
 // { [tgId]: true } — бариста зараз вводить кількість піц
 const waitingForQty = {};
