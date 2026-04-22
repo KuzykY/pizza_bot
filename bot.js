@@ -7,9 +7,14 @@ const cron = require("node-cron");
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 
 // ── Google Sheets підключення ─────────────────────────────────────────────
+const privateKey = process.env.GOOGLE_PRIVATE_KEY;
+if (!privateKey) throw new Error("❌ GOOGLE_PRIVATE_KEY не задано в змінних середовища!");
+if (!process.env.GOOGLE_SERVICE_EMAIL) throw new Error("❌ GOOGLE_SERVICE_EMAIL не задано!");
+if (!process.env.BOT_TOKEN) throw new Error("❌ BOT_TOKEN не задано!");
+
 const serviceAccountAuth = new JWT({
   email: process.env.GOOGLE_SERVICE_EMAIL,
-  key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, "\n"),
+  key: privateKey.replace(/\\n/g, "\n"),
   scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 
@@ -41,6 +46,30 @@ function pizzaWord(n) {
   if (n === 1) return "піца";
   if (n >= 2 && n <= 4) return "піци";
   return "піц";
+}
+
+// ── Постійна клавіатура внизу ─────────────────────────────────────────────
+const persistentKeyboard = {
+  keyboard: [
+    [{ text: "🏠 Головна" }, { text: "📊 Статистика" }],
+    [{ text: "🍕 Ввести код" }],
+  ],
+  resize_keyboard: true,
+  persistent: true,
+};
+
+async function sendHome(chatId, name, tgId) {
+  const count = await getClientCount(tgId);
+  const remaining = 10 - (count % 10);
+
+  bot.sendMessage(chatId,
+    `🏠 *Головна*\n\n` +
+    `👋 ${name}\n\n` +
+    `🍕 Куплено піц: *${count}*\n` +
+    `До безкоштовної: *${remaining}* ${pizzaWord(remaining)}\n\n` +
+    `${count === 0 ? "Купи першу піцу і отримай код від бариста! 👇" : remaining <= 3 ? "🔥 Ще трохи — і безкоштовна піца!" : "💪 Гарний прогрес!"}`,
+    { parse_mode: "Markdown", reply_markup: persistentKeyboard }
+  );
 }
 
 // ── Отримати або створити денний код ──────────────────────────────────────
@@ -135,26 +164,53 @@ bot.onText(/\/start/, async (msg) => {
   const username = msg.from.username || "";
 
   await getOrCreateClient(tgId, name, username);
-  const count = await getClientCount(tgId);
-  const remaining = 10 - (count % 10);
 
+  // Вітальне повідомлення лише при першому запуску
   bot.sendMessage(tgId,
     `👋 Привіт, ${name}!\n\n` +
     `🍕 Це бот програми лояльності *Хліб з маслом*\n` +
     `Кожна 11-а міні-піца — *безкоштовно!*\n\n` +
-    `📊 Твоїх покупок: *${count}*\n` +
-    `До безкоштовної: *${remaining}* ${pizzaWord(remaining)}\n\n` +
-    `Отримав код від бариста? Введи:\n` +
-    `👉 /code XXXXXX`,
-    {
-      parse_mode: "Markdown",
-      reply_markup: {
-        inline_keyboard: [[
-          { text: "📊 Моя статистика", callback_data: "stats" }
-        ]]
-      }
-    }
+    `Використовуй кнопки внизу 👇`,
+    { parse_mode: "Markdown", reply_markup: persistentKeyboard }
   );
+
+  // Одразу показуємо головну
+  await sendHome(tgId, name, tgId);
+});
+
+// ── Обробка кнопок постійної клавіатури ──────────────────────────────────
+bot.on("message", async (msg) => {
+  if (!msg.text) return;
+  const tgId = msg.from.id;
+  const name = msg.from.first_name || "Гість";
+  const username = msg.from.username || "";
+
+  if (msg.text === "🏠 Головна") {
+    await getOrCreateClient(tgId, name, username);
+    return sendHome(msg.chat.id, name, tgId);
+  }
+
+  if (msg.text === "📊 Статистика") {
+    const count = await getClientCount(tgId);
+    const remaining = 10 - (count % 10);
+    const freeEarned = Math.floor(count / 10);
+    return bot.sendMessage(msg.chat.id,
+      `📊 *Твоя статистика*\n\n` +
+      `🍕 Куплено піц: *${count}*\n` +
+      `🆓 Отримано безкоштовних: *${freeEarned}*\n` +
+      `До наступної: *${remaining}* ${pizzaWord(remaining)}\n\n` +
+      `${remaining <= 3 ? "🔥 Ще трохи — і безкоштовна піца!" : "💪 Продовжуй!"}`,
+      { parse_mode: "Markdown", reply_markup: persistentKeyboard }
+    );
+  }
+
+  if (msg.text === "🍕 Ввести код") {
+    return bot.sendMessage(msg.chat.id,
+      `Введи код який дав бариста:\n\n` +
+      `👉 \`/code XXXXXX\``,
+      { parse_mode: "Markdown", reply_markup: persistentKeyboard }
+    );
+  }
 });
 
 bot.onText(/\/code (.+)/, async (msg, match) => {
@@ -274,22 +330,6 @@ bot.onText(/\/check (.+)/, async (msg, match) => {
 bot.on("callback_query", async (query) => {
   const tgId = query.from.id;
   const data = query.data;
-
-  // Клієнтська статистика
-  if (data === "stats") {
-    const count = await getClientCount(tgId);
-    const remaining = 10 - (count % 10);
-    const freeEarned = Math.floor(count / 10);
-    bot.editMessageText(
-      `📊 *Твоя статистика*\n\n` +
-      `🍕 Куплено піц: *${count}*\n` +
-      `🆓 Отримано безкоштовних: *${freeEarned}*\n` +
-      `До наступної: *${remaining}* ${pizzaWord(remaining)}\n\n` +
-      `${remaining <= 3 ? "🔥 Ще трохи — і безкоштовна піца!" : "💪 Продовжуй!"}`,
-      { chat_id: query.message.chat.id, message_id: query.message.message_id, parse_mode: "Markdown" }
-    );
-    return bot.answerCallbackQuery(query.id);
-  }
 
   if (!isAdmin(tgId)) return bot.answerCallbackQuery(query.id);
 
