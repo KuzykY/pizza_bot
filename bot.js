@@ -36,8 +36,6 @@ function isAdmin(tgId)   { return ADMIN_IDS.includes(String(tgId)); }
 function isBarista(tgId) { return BARISTA_IDS.includes(String(tgId)); }
 function isStaff(tgId)   { return isAdmin(tgId) || isBarista(tgId); }
  
-console.log("ADMIN_IDS:", ADMIN_IDS);
-console.log("BARISTA_IDS:", BARISTA_IDS);
  
 const waitingForQty = {};
  
@@ -89,7 +87,6 @@ async function generateOneTimeCode(qty, baristaName) {
   const { codes } = await getSheets();
   const code = randomCode();
   await codes.addRow([todayStr(), String(code), String(qty), "no", baristaName || ""]);
-  console.log(`Код збережено: ${code}, qty: ${qty}, barista: ${baristaName}`);
   return code;
 }
  
@@ -100,7 +97,6 @@ async function useOneTimeCode(inputCode) {
     const storedCode = String(r.get("code") || "").trim();
     const enteredCode = String(inputCode || "").trim();
     const used = r.get("used");
-    console.log(`Порівняння: "${storedCode}" === "${enteredCode}" | used: ${used}`);
     return storedCode === enteredCode && used !== "yes";
   });
   if (!found) return null;
@@ -177,9 +173,6 @@ bot.onText(/\/start/, async (msg) => {
   const tgId = msg.from.id;
   const name = msg.from.first_name || "Гість";
   const username = msg.from.username || "";
- 
-  console.log(`/start від: ${tgId}, isAdmin: ${isAdmin(tgId)}, isBarista: ${isBarista(tgId)}`);
-  console.log(`BARISTA_IDS зараз:`, BARISTA_IDS);
  
   if (isBarista(tgId)) {
     return bot.sendMessage(tgId,
@@ -349,7 +342,7 @@ bot.on("message", async (msg) => {
       await bot.sendMessage(msg.chat.id,
         `🎉 *Вітаємо!* Ти заробив безкоштовну піцу!\n\n` +
         `Покажи касиру цей купон:\n🎟 \`${coupon}\`\n\n` +
-        `_Купон безстроковий`,
+        `_Купон безстроковий — не загубь!_`,
         { parse_mode: "Markdown", reply_markup: clientKeyboard }
       );
     }
@@ -399,6 +392,27 @@ bot.on("callback_query", async (query) => {
   bot.answerCallbackQuery(query.id);
 });
  
+// Щоночі о 3:00 — видаляємо використані коди старші за 1 день
+cron.schedule("0 3 * * *", async () => {
+  try {
+    const { codes } = await getSheets();
+    const rows = await codes.getRows();
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const cutoff = yesterday.toLocaleString("sv", { timeZone: "Europe/Kyiv" }).slice(0, 10);
+    let deleted = 0;
+    for (const row of rows) {
+      if (row.get("used") === "yes" && row.get("date") <= cutoff) {
+        await row.delete();
+        deleted++;
+      }
+    }
+    console.log(`🧹 Очищено ${deleted} використаних кодів`);
+  } catch (e) {
+    console.error("Помилка очищення:", e.message);
+  }
+}, { timezone: "Europe/Kyiv" });
+
 cron.schedule("1 9 * * *", async () => {
   for (const adminId of ADMIN_IDS) {
     bot.sendMessage(adminId,
