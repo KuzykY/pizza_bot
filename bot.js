@@ -342,7 +342,7 @@ bot.on("message", async (msg) => {
       await bot.sendMessage(msg.chat.id,
         `🎉 *Вітаємо!* Ти заробив безкоштовну піцу!\n\n` +
         `Покажи касиру цей купон:\n🎟 \`${coupon}\`\n\n` +
-        `_Купон безстроковий — не загубь!_`,
+        `_Купон діє до кінця акції`,
         { parse_mode: "Markdown", reply_markup: clientKeyboard }
       );
     }
