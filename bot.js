@@ -342,7 +342,7 @@ bot.on("message", async (msg) => {
       await bot.sendMessage(msg.chat.id,
         `🎉 *Вітаємо!* Ти заробив безкоштовну піцу!\n\n` +
         `Покажи касиру цей купон:\n🎟 \`${coupon}\`\n\n` +
-        `_Купон діє до кінця акції`,
+        `_Купон діє до кінця акції!_`,
         { parse_mode: "Markdown", reply_markup: clientKeyboard }
       );
     }
@@ -414,11 +414,31 @@ cron.schedule("0 3 * * *", async () => {
 }, { timezone: "Europe/Kyiv" });
 
 cron.schedule("1 9 * * *", async () => {
-  for (const adminId of ADMIN_IDS) {
-    bot.sendMessage(adminId,
-      `☀️ *Доброго ранку!*\n\n🍕 Бот лояльності працює.\nДля статистики: /admin`,
-      { parse_mode: "Markdown" }
-    );
+  try {
+    const { clients, codes } = await getSheets();
+    const clientRows = await clients.getRows();
+    const codeRows = await codes.getRows();
+
+    const today = todayStr();
+    const todayCodes = codeRows.filter(r => r.get("date") === today);
+    const todayPizzas = todayCodes.reduce((sum, r) => sum + parseInt(r.get("qty") || "1"), 0);
+    const totalClients = clientRows.length;
+    const totalPizzas = clientRows.reduce((sum, r) => sum + parseInt(r.get("count") || "0"), 0);
+
+    for (const adminId of ADMIN_IDS) {
+      bot.sendMessage(adminId,
+        `☀️ *Доброго ранку!*\n\n` +
+        `📊 *Статистика за вчора:*\n` +
+        `🍕 Продано піц: *${todayPizzas}*\n` +
+        `🎟 Кодів згенеровано: *${todayCodes.length}*\n\n` +
+        `📈 *Загалом за весь час:*\n` +
+        `👥 Клієнтів: *${totalClients}*\n` +
+        `🍕 Піц продано: *${totalPizzas}*`,
+        { parse_mode: "Markdown" }
+      );
+    }
+  } catch (e) {
+    console.error("Помилка ранкової статистики:", e.message);
   }
 }, { timezone: "Europe/Kyiv" });
  
