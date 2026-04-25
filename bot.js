@@ -88,7 +88,8 @@ const adminKeyboard = {
 async function generateOneTimeCode(qty, baristaName) {
   const { codes } = await getSheets();
   const code = randomCode();
-  await codes.addRow({ date: todayStr(), code: code, qty: String(qty), used: "no", barista: baristaName || "" });
+  await codes.addRow([todayStr(), String(code), String(qty), "no", baristaName || ""]);
+  console.log(`Код збережено: ${code}, qty: ${qty}, barista: ${baristaName}`);
   return code;
 }
  
@@ -98,8 +99,9 @@ async function useOneTimeCode(inputCode) {
   const found = rows.find(r => {
     const storedCode = String(r.get("code") || "").trim();
     const enteredCode = String(inputCode || "").trim();
-    console.log(`Порівняння: "${storedCode}" === "${enteredCode}" | used: ${r.get("used")}`);
-    return storedCode === enteredCode && r.get("used") === "no";
+    const used = r.get("used");
+    console.log(`Порівняння: "${storedCode}" === "${enteredCode}" | used: ${used}`);
+    return storedCode === enteredCode && used !== "yes";
   });
   if (!found) return null;
   const qty = parseInt(found.get("qty") || "1");
