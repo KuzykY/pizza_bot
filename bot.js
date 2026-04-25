@@ -95,7 +95,12 @@ async function generateOneTimeCode(qty, baristaName) {
 async function useOneTimeCode(inputCode) {
   const { codes } = await getSheets();
   const rows = await codes.getRows();
-  const found = rows.find(r => String(r.get("code")) === String(inputCode) && r.get("used") === "no");
+  const found = rows.find(r => {
+    const storedCode = String(r.get("code") || "").trim();
+    const enteredCode = String(inputCode || "").trim();
+    console.log(`Порівняння: "${storedCode}" === "${enteredCode}" | used: ${r.get("used")}`);
+    return storedCode === enteredCode && r.get("used") === "no";
+  });
   if (!found) return null;
   const qty = parseInt(found.get("qty") || "1");
   found.set("used", "yes");
